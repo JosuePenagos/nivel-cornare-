@@ -1,11 +1,11 @@
 """
-App básica de Streamlit — Nivel de ríos/quebradas (CORNARE / MARCO)
---------------------------------------------------------------------
-Cada estudiante debe cambiar, como mínimo, el código de la estación
-en el sidebar. Los valores de fecha y calidad también son ajustables.
+App de Streamlit — Nivel de ríos/quebradas (CORNARE / MARCO)
+--------------------------------------------------------------
+Versión con carga AUTOMÁTICA del código 31.
+Sin botón de consulta, se carga apenas abres la app.
 
 Para correrla:
-    streamlit run app_nivel_cornare.py
+    streamlit run app_nivel_cornare_auto.py
 """
 
 import requests
@@ -13,12 +13,12 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import urllib3
+from datetime import datetime, timedelta
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ------------------------------------------------------------------
 # Coordenadas por defecto (Institución Universitaria Pascual Bravo)
-# Se usan solo si la API no trae la latitud/longitud de la estación.
 # ------------------------------------------------------------------
 LAT_DEFECTO = 6.2766
 LON_DEFECTO = -75.5901
@@ -36,6 +36,7 @@ st.set_page_config(page_title="Nivel de estación — CORNARE", page_icon="🌊"
 # ------------------------------------------------------------------
 # Funciones de consulta
 # ------------------------------------------------------------------
+@st.cache_data(ttl=600)  # Cache por 10 minutos
 def obtener_serie_nivel(codigo_estacion, desde, hasta, calidad=1, timeout=30):
     url = f"{API_BASE_URL}/{codigo_estacion}/nivel"
     params = {"desde": desde, "hasta": hasta, "calidad": calidad}
@@ -69,7 +70,7 @@ def obtener_todas_las_paginas(datos_json, timeout=30):
 
 
 def detectar_coordenadas(datos_json):
-    """Busca lat/lon en las llaves raíz de la respuesta. Si no las encuentra, usa el valor por defecto."""
+    """Busca lat/lon en las llaves raíz de la respuesta."""
     if not isinstance(datos_json, dict):
         return LAT_DEFECTO, LON_DEFECTO, False
 
@@ -111,71 +112,131 @@ def calcular_indice_calidad(df):
 
 
 # ------------------------------------------------------------------
-# Sidebar — parámetros de la consulta (editables por cada estudiante)
+# INTERFAZ PRINCIPAL
 # ------------------------------------------------------------------
-st.sidebar.header("Parámetros de tu consulta")
-nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Tu Nombre Aquí")
-codigo_estacion = st.sidebar.text_input("Código de estación", "42")
-fecha_desde = st.sidebar.date_input("Desde", pd.to_datetime("2026-08-23")).strftime("%Y-%m-%d")
-fecha_hasta = st.sidebar.date_input("Hasta", pd.to_datetime("2026-08-30")).strftime("%Y-%m-%d")
-calidad = st.sidebar.selectbox("Calidad", [1, 0], index=0, help="1 = solo datos validados")
-consultar = st.sidebar.button("🔍 Consultar", type="primary")
 
 st.title("🌊 Nivel de ríos y quebradas — CORNARE")
-st.caption(f"Estudiante: **{nombre_estudiante}** · Estación: **{codigo_estacion}**")
+
+# --- Sidebar ---
+st.sidebar.header("📍 Estación 31")
+st.sidebar.success("✓ Código de estación: **31** (cargada automáticamente)")
+
+# Entrada del nombre del estudiante
+nombre_estudiante = st.sidebar.text_input("Nombre del estudiante", "Tu Nombre Aquí")
+
+# Rango de fechas (editable)
+col_desde, col_hasta = st.sidebar.columns(2)
+with col_desde:
+    fecha_desde = st.date_input("Desde", pd.to_datetime("2026-08-23"))
+with col_hasta:
+    fecha_hasta = st.date_input("Hasta", pd.to_datetime("2026-08-30"))
+
+# Calidad
+calidad = st.sidebar.selectbox("Calidad de datos", [1, 0], format_func=lambda x: "Solo validados" if x == 1 else "Todos", index=0)
+
+# Botón para refrescar (opcional)
+refrescar = st.sidebar.button("🔄 Refrescar datos", type="secondary", use_container_width=True)
+
+# Checkbox para geoportal
+st.sidebar.markdown("---")
+ver_geoportal = st.sidebar.checkbox("📡 Ver geoportal MARCO", value=False)
+
+st.caption(f"Estudiante: **{nombre_estudiante}** · Estación: **31**")
 
 # ------------------------------------------------------------------
-# Consulta y procesamiento
+# Carga automática de datos
 # ------------------------------------------------------------------
-if consultar:
-    with st.spinner("Consultando la API..."):
-        datos_crudos, error = obtener_serie_nivel(codigo_estacion, fecha_desde, fecha_hasta, calidad)
+codigo_estacion = "31"
+fecha_desde_str = fecha_desde.strftime("%Y-%m-%d")
+fecha_hasta_str = fecha_hasta.strftime("%Y-%m-%d")
 
-    if error:
-        st.error(f"❌ {error}")
+with st.spinner("Cargando datos de la estación 31..."):
+    datos_crudos, error = obtener_serie_nivel(codigo_estacion, fecha_desde_str, fecha_hasta_str, calidad)
+
+if error:
+    st.error(f"❌ Error al consultar: {error}")
+    st.stop()
+else:
+    registros = obtener_todas_las_paginas(datos_crudos)
+
+    if not registros:
+        st.warning("⚠️ No hay registros para este rango de fechas. Prueba ampliar el período.")
     else:
-        registros = obtener_todas_las_paginas(datos_crudos)
+        # Procesar datos
+        df = pd.DataFrame(registros)
+        df = df.rename(columns={LLAVE_FECHA: "fecha", LLAVE_VALOR: "nivel"})
+        df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
+        df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
+        df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
 
-        if not registros:
-            st.warning("No hay registros para esta estación y rango de fechas. Prueba otro código u otro rango.")
-        else:
-            df = pd.DataFrame(registros)
-            df = df.rename(columns={LLAVE_FECHA: "fecha", LLAVE_VALOR: "nivel"})
-            df["fecha"] = pd.to_datetime(df["fecha"], errors="coerce")
-            df["nivel"] = pd.to_numeric(df["nivel"], errors="coerce")
-            df = df.dropna(subset=["fecha", "nivel"]).sort_values("fecha").reset_index(drop=True)
+        lat, lon, coords_reales = detectar_coordenadas(datos_crudos)
+        indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
 
-            lat, lon, coords_reales = detectar_coordenadas(datos_crudos)
-            indice_calidad, huecos, n_outliers = calcular_indice_calidad(df)
+        # --- Métricas principales ---
+        st.subheader("📊 Estadísticas")
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total de lecturas", len(df))
+        with col2:
+            st.metric("Nivel promedio", f"{df['nivel'].mean():.2f}")
+        with col3:
+            st.metric("Nivel máximo", f"{df['nivel'].max():.2f}")
+        with col4:
+            st.metric("Nivel mínimo", f"{df['nivel'].min():.2f}")
 
-            # --- Métricas principales ---
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Lecturas", len(df))
-            col2.metric("Nivel promedio", f"{df['nivel'].mean():.2f}")
-            col3.metric("Índice de calidad", f"{indice_calidad} / 100")
-            col4.metric("Outliers detectados", n_outliers)
+        # --- Gráfico de la serie ---
+        st.subheader("📈 Serie temporal de nivel")
+        st.line_chart(df.set_index("fecha")["nivel"], use_container_width=True)
 
-            # --- Gráfico de la serie ---
-            st.subheader("Serie de nivel")
-            st.line_chart(df.set_index("fecha")["nivel"])
+        # --- Dos columnas: mapa + métricas de calidad ---
+        col_map, col_quality = st.columns([1, 1])
 
-            # --- Mapa de la estación ---
-            st.subheader("Ubicación de la estación")
+        with col_map:
+            st.subheader("📍 Ubicación")
             if not coords_reales:
-                st.caption("La API no trajo latitud/longitud de la estación — se muestra el punto de partida (Pascual Bravo). Ajusta `CANDIDATOS_LAT` / `CANDIDATOS_LON` si conoces el nombre real de esas llaves.")
+                st.caption("📌 Punto de referencia (Pascual Bravo)")
             st.map(pd.DataFrame({"lat": [lat], "lon": [lon]}), zoom=10)
 
-            # --- Detalle de calidad ---
-            with st.expander("Detalle del índice de calidad"):
-                st.write(f"- Huecos de reporte detectados: **{huecos}**")
-                st.write(f"- Outliers (IQR + nivel negativo): **{n_outliers}** de {len(df)} lecturas")
-                st.write("El índice combina completitud de la serie (70%) y proporción de datos sin outliers (30%).")
+        with col_quality:
+            st.subheader("✅ Calidad de datos")
+            st.metric("Índice de calidad", f"{indice_calidad} / 100")
+            st.write(f"📊 Huecos detectados: **{huecos}**")
+            st.write(f"⚠️ Outliers: **{n_outliers}** de {len(df)}")
 
-            # --- Tabla y descarga ---
-            with st.expander("Ver datos crudos"):
-                st.dataframe(df, use_container_width=True)
+        # --- Detalle expandible ---
+        with st.expander("Ver metodología del índice de calidad"):
+            st.write("""
+            El **índice de calidad** (0-100) mide dos aspectos:
+            - **Completitud (70%):** Proporción de fechas esperadas vs. registros reales
+            - **Validez (30%):** Proporción de valores sin outliers (método IQR + niveles negativos)
+            
+            Un índice cercano a 100 indica datos completos y confiables.
+            """)
 
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("⬇️ Descargar CSV", csv, file_name=f"nivel_estacion_{codigo_estacion}.csv", mime="text/csv")
-else:
-    st.info("Ajusta los parámetros en el sidebar y presiona **Consultar**.")
+        # --- Tabla de datos ---
+        with st.expander("Ver tabla de datos crudos"):
+            st.dataframe(df, use_container_width=True, height=400)
+
+        # --- Descarga ---
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⬇️ Descargar como CSV",
+            csv,
+            file_name="nivel_estacion_31.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+
+
+# ------------------------------------------------------------------
+# Geoportal MARCO (opcional)
+# ------------------------------------------------------------------
+if ver_geoportal:
+    st.markdown("---")
+    st.subheader("🗺️ Geoportal MARCO - Cornare")
+    st.components.v1.iframe(
+        src="https://marco.cornare.gov.co/geoportal/31",
+        height=700,
+        scrolling=True
+    )
+    st.caption("Fuente: [MARCO - Cornare Estación 31](https://marco.cornare.gov.co/geoportal/31)")
